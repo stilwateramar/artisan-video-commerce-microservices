@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "Artisan Studio",
+    "slug": "artisan-video-commerce",
+    "scheme": "artisan",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.devdolphins.artisanvideo",
+      "adaptiveIcon": {
+        "backgroundColor": "#F4EDE4",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "output": "single",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Pick a process video of your craft to upload."
+        }
+      ],
+      [
+        "react-native-video",
+        {
+          "androidExtensions": {
+            "useExoplayerHls": true,
+            "useExoplayerDash": false,
+            "useExoplayerSmoothStreaming": false,
+            "useExoplayerRtsp": false
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

@@ -1,0 +1,23 @@
+node_modules/
+.expo/
+dist/
+dist-web/
+web-build/
+
+# Native projects come from `expo prebuild`
+android/
+ios/
+*.apk
+*.aab
+
+*.log
+.env
+.env.*
+!.env.example
+
+# Web build copied in by infra/deploy.sh
+backend/api/public/*
+!backend/api/public/index.html
+
+backend/worker/ladder-out/
+.DS_Store

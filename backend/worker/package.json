@@ -1,0 +1,18 @@
+{
+  "name": "artisan-transcoder-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/transcode.js",
+  "scripts": {
+    "start": "node src/transcode.js",
+    "test:ladder": "node scripts/test-ladder.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^7.11.0",
+    "@google-cloud/storage": "^7.16.0"
+  }
+}

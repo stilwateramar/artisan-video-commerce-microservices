@@ -1,0 +1,30 @@
+export type Role = 'ARTISAN' | 'BUYER';
+export type User = { id: string; name: string; role: Role };
+export type ProductStatus = 'UPLOADING' | 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED';
+export type Product = {
+  id: string;
+  title: string;
+  description: string;
+  priceMinor: number;
+  currency: string;
+  tags: string[];
+  artisanId: string;
+  artisanName: string;
+  status: ProductStatus;
+  error?: string;
+  durationSec?: number;
+  hlsUrl?: string;
+  thumbnailUrl?: string;
+  createdAt?: string;
+};
+export type Order = {
+  id: string;
+  productId: string;
+  productTitle: string;
+  thumbnailUrl?: string | null;
+  quantity: number;
+  totalMinor: number;
+  currency: string;
+  status: 'PLACED';
+  createdAt?: string;
+};
