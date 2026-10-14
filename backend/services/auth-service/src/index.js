@@ -1,11 +1,14 @@
-import { Router } from 'express';
+// Demo sign-in: a display name and role get a signed JWT, no password. Owns the `users` collection.
+import { Firestore } from '@google-cloud/firestore';
 import { nanoid } from 'nanoid';
-import { signToken } from '../lib/auth.js';
-import { db } from '../lib/gcp.js';
+import { createApp, createAuth, env, listen, loadJwtSecret } from '@artisan/shared';
 
-const router = Router();
+const db = new Firestore({ ignoreUndefinedProperties: true });
+const auth = createAuth(await loadJwtSecret());
+const users = db.collection('users');
+const app = createApp('auth-service');
 
-router.post('/demo', async (req, res) => {
+app.post('/api/auth/demo', async (req, res) => {
   const name = String(req.body?.name || '')
     .trim()
     .slice(0, 60);
@@ -16,16 +19,16 @@ router.post('/demo', async (req, res) => {
 
   // Same name and role map to the same user, so people can sign back in.
   const key = `${role}:${name.toLowerCase()}`;
-  const existing = await db.collection('users').where('key', '==', key).limit(1).get();
+  const existing = await users.where('key', '==', key).limit(1).get();
   let user;
   if (existing.empty) {
     user = { id: nanoid(12), name, role, key, createdAt: new Date().toISOString() };
-    await db.collection('users').doc(user.id).set(user);
+    await users.doc(user.id).set(user);
   } else {
     user = { id: existing.docs[0].id, ...existing.docs[0].data() };
   }
   const payload = { id: user.id, name: user.name, role: user.role };
-  res.json({ token: signToken(payload), user: payload });
+  res.json({ token: auth.sign(payload), user: payload });
 });
 
-export default router;
+listen(app, Number(env('PORT', '8081')), 'auth-service');

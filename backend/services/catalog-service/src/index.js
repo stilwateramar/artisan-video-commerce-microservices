@@ -1,15 +1,32 @@
-import { Router } from 'express';
+// Products, upload sessions, search and tags. Owns the `products` collection and starts the
+// transcoder; status updates come back as Pub/Sub events (see events.js).
+import express from 'express';
+import { FieldValue, Firestore } from '@google-cloud/firestore';
 import { nanoid } from 'nanoid';
-import { FieldValue } from '@google-cloud/firestore';
-import { config } from '../config.js';
-import { db, storage } from '../lib/gcp.js';
-import { requireAuth } from '../lib/auth.js';
-import { buildSearchTokens, matchesAll, normalizeTags, words } from '../lib/search.js';
-import { startTranscode } from '../lib/jobs.js';
-import { mediaUrl } from '../lib/media.js';
+import {
+  createApp,
+  createAuth,
+  createStorage,
+  listen,
+  loadJwtSecret,
+  mediaUrl,
+  publicOrigin,
+} from '@artisan/shared';
+import { config } from './config.js';
+import { eventsRouter } from './events.js';
+import { buildSearchTokens, matchesAll, normalizeTags, words } from './search.js';
+import { startTranscode } from './transcode.js';
+import { localUploadRoute } from './uploads.js';
 
-const router = Router();
+const db = new Firestore({ ignoreUndefinedProperties: true });
+const storage = createStorage();
+const auth = createAuth(await loadJwtSecret());
 const products = () => db.collection('products');
+const app = createApp('catalog-service', { json: false });
+
+// Uploaded video bytes must reach the local upload route unparsed; everything else is JSON.
+if (storage.mode === 'local') localUploadRoute(app, { products, storage, rawBucket: config.rawBucket });
+app.use(express.json({ limit: '1mb' }));
 
 function toPublic(id, product, req) {
   return {
@@ -24,17 +41,17 @@ function toPublic(id, product, req) {
     status: product.status,
     error: product.error,
     durationSec: product.durationSec,
-    hlsUrl: mediaUrl(product.hlsUrl, req),
-    thumbnailUrl: mediaUrl(product.thumbnailUrl, req),
+    hlsUrl: mediaUrl(product.hlsPath, req),
+    thumbnailUrl: mediaUrl(product.thumbnailPath, req),
     createdAt: product.createdAt?.toDate?.().toISOString?.() ?? product.createdAt,
   };
 }
 
 const newestFirst = (a, b) => String(b.createdAt).localeCompare(String(a.createdAt));
 
-// Returns a GCS resumable upload URL. The client sends the video straight to GCS,
-// so file size is unlimited and the bytes never pass through Cloud Run.
-router.post('/', requireAuth('ARTISAN'), async (req, res) => {
+// Returns an upload URL. In production it is a GCS resumable session, so the video goes straight
+// to Cloud Storage, file size is unlimited and the bytes never pass through Cloud Run.
+app.post('/api/products', auth.requireAuth('ARTISAN'), async (req, res) => {
   const body = req.body || {};
   const title = String(body.title || '').trim();
   const description = String(body.description || '').trim();
@@ -72,38 +89,37 @@ router.post('/', requireAuth('ARTISAN'), async (req, res) => {
   };
   await products().doc(id).set(product);
 
-  // GCS only returns CORS headers on the session URL if it was created with the page's origin.
-  const [uploadUrl] = await storage
-    .bucket(config.rawBucket)
-    .file(rawObject)
-    .createResumableUpload({ metadata: { contentType }, origin: req.get('origin') || undefined });
-
+  const uploadUrl =
+    (await storage.createUploadSession(config.rawBucket, rawObject, {
+      contentType,
+      origin: req.get('origin'),
+    })) || `${publicOrigin(req)}/api/products/${id}/upload`;
   res
     .status(201)
-    .json({ product: toPublic(id, { ...product, createdAt: new Date().toISOString() }), uploadUrl });
+    .json({ product: toPublic(id, { ...product, createdAt: new Date().toISOString() }, req), uploadUrl });
 });
 
-router.post('/:id/complete', requireAuth('ARTISAN'), async (req, res) => {
+app.post('/api/products/:id/complete', auth.requireAuth('ARTISAN'), async (req, res) => {
   const ref = products().doc(req.params.id);
   const snap = await ref.get();
   if (!snap.exists) return res.status(404).json({ error: 'Product not found' });
   const product = snap.data();
   if (product.artisanId !== req.user.id) return res.status(403).json({ error: 'Not your product' });
-
-  const [uploaded] = await storage.bucket(config.rawBucket).file(product.rawObject).exists();
-  if (!uploaded) return res.status(409).json({ error: 'Upload not finished yet' });
+  if (!(await storage.exists(config.rawBucket, product.rawObject))) {
+    return res.status(409).json({ error: 'Upload not finished yet' });
+  }
 
   await ref.update({ status: 'QUEUED', uploadedAt: FieldValue.serverTimestamp() });
-  await startTranscode(req.params.id);
+  await startTranscode(req.params.id, product.rawObject);
   res.json({ status: 'QUEUED' });
 });
 
-router.get('/mine', requireAuth('ARTISAN'), async (req, res) => {
+app.get('/api/products/mine', auth.requireAuth('ARTISAN'), async (req, res) => {
   const snap = await products().where('artisanId', '==', req.user.id).get();
   res.json({ products: snap.docs.map((d) => toPublic(d.id, d.data(), req)).sort(newestFirst) });
 });
 
-router.get('/', async (req, res) => {
+app.get('/api/products', async (req, res) => {
   const terms = words(req.query.q || '');
   const tag = String(req.query.tag || '')
     .trim()
@@ -122,7 +138,7 @@ router.get('/', async (req, res) => {
   res.json({ products: list.slice(0, 100) });
 });
 
-router.get('/tags', async (_req, res) => {
+app.get('/api/products/tags', async (_req, res) => {
   const snap = await products().where('status', '==', 'READY').select('tags').limit(500).get();
   const counts = new Map();
   for (const d of snap.docs) for (const t of d.get('tags') || []) counts.set(t, (counts.get(t) || 0) + 1);
@@ -133,10 +149,29 @@ router.get('/tags', async (_req, res) => {
   res.json({ tags });
 });
 
-router.get('/:id', async (req, res) => {
+app.get('/api/products/:id', async (req, res) => {
   const snap = await products().doc(req.params.id).get();
   if (!snap.exists) return res.status(404).json({ error: 'Product not found' });
   res.json({ product: toPublic(snap.id, snap.data(), req) });
 });
 
-export default router;
+// Internal: used by order-service. Not routed by the gateway; in production only callers with
+// the Cloud Run invoker role on this service can reach it.
+app.get('/internal/products/:id', async (req, res) => {
+  const snap = await products().doc(req.params.id).get();
+  if (!snap.exists) return res.status(404).json({ error: 'Product not found' });
+  const p = snap.data();
+  res.json({
+    id: snap.id,
+    title: p.title,
+    priceMinor: p.priceMinor,
+    currency: p.currency,
+    status: p.status,
+    artisanId: p.artisanId,
+    thumbnailPath: p.thumbnailPath || null,
+  });
+});
+
+eventsRouter(db, app);
+
+listen(app, config.port, 'catalog-service');
