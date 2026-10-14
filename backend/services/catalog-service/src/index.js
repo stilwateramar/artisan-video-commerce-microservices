@@ -7,6 +7,7 @@ import {
   createApp,
   createAuth,
   createStorage,
+  env,
   listen,
   loadJwtSecret,
   mediaUrl,
@@ -18,7 +19,11 @@ import { buildSearchTokens, matchesAll, normalizeTags, words } from './search.js
 import { startTranscode } from './transcode.js';
 import { localUploadRoute } from './uploads.js';
 
-const db = new Firestore({ ignoreUndefinedProperties: true });
+// A named database keeps this version's data apart from anything else in the project.
+const db = new Firestore({
+  ignoreUndefinedProperties: true,
+  databaseId: env('FIRESTORE_DATABASE', '(default)'),
+});
 const storage = createStorage();
 const auth = createAuth(await loadJwtSecret());
 const products = () => db.collection('products');

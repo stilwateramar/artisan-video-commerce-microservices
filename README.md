@@ -123,6 +123,9 @@ least-privilege IAM, the `video-events` topic and its authenticated push subscri
 images with Cloud Build, and deploys the five services and the transcoder job. Only the gateway is
 public; the other services require the Cloud Run invoker role.
 
+All resources are prefixed `artisan-ms` and use their own Firestore database, so the script can run in
+the same project as the monolith demo without changing it.
+
 ## API
 
 | Method | Path                         | Role    | Purpose                                         |

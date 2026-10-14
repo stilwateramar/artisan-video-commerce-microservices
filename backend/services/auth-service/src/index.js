@@ -3,7 +3,11 @@ import { Firestore } from '@google-cloud/firestore';
 import { nanoid } from 'nanoid';
 import { createApp, createAuth, env, listen, loadJwtSecret } from '@artisan/shared';
 
-const db = new Firestore({ ignoreUndefinedProperties: true });
+// A named database keeps this version's data apart from anything else in the project.
+const db = new Firestore({
+  ignoreUndefinedProperties: true,
+  databaseId: env('FIRESTORE_DATABASE', '(default)'),
+});
 const auth = createAuth(await loadJwtSecret());
 const users = db.collection('users');
 const app = createApp('auth-service');

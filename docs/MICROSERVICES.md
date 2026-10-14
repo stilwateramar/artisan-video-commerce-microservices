@@ -67,6 +67,25 @@ least once and can reorder, so the handler is idempotent:
 Media is stored by path (`videos/<id>/master.m3u8`). Services build absolute URLs per request from the
 `X-Forwarded-Host` header the gateway sets, so links always match the host the client used.
 
+## Running next to the live demo
+
+`deploy-microservices.sh` can target the same GCP project as the monolith demo without affecting it.
+Every resource has its own name, and the data lives in a separate Firestore database:
+
+| Resource         | Monolith demo (unchanged)             | Microservices                                        |
+| ---------------- | ------------------------------------- | ---------------------------------------------------- |
+| Public URL       | `artisan-api-...run.app`              | `artisan-ms-gateway-...run.app`                      |
+| Cloud Run        | `artisan-api`                         | `artisan-ms-gateway`, `artisan-ms-<name>-service` x4 |
+| Transcoder job   | `artisan-transcoder`                  | `artisan-ms-transcoder`                              |
+| Buckets          | `<project>-artisan-raw`, `-media`     | `<project>-artisan-ms-raw`, `-artisan-ms-media`      |
+| Firestore        | `(default)` database                  | `artisan-ms` database                                |
+| Service accounts | `artisan-api-sa`, `artisan-worker-sa` | `ams-<name>`                                         |
+| Secret, topic    | none                                  | `artisan-ms-jwt-secret`, `artisan-ms-video-events`   |
+
+The only project-wide change is two roles for the default compute service account that Cloud Build
+uses, which the monolith deploy already needs. The Android APK has the API address built in, so a
+build that should talk to the microservices gateway needs `EXPO_PUBLIC_API_URL=<gateway url>`.
+
 ## Security
 
 - **Public surface:** only the gateway. It is made public with `--no-invoker-iam-check`, because our
@@ -79,19 +98,19 @@ Media is stored by path (`videos/<id>/master.m3u8`). Services build absolute URL
   startup; locally `JWT_SECRET` comes from the environment.
 - **One service account per service:**
 
-| Account        | Permissions                                                                                              |
-| -------------- | -------------------------------------------------------------------------------------------------------- |
-| sa-gateway     | Invoker on auth, catalog, order, media                                                                   |
-| sa-auth        | Firestore user, read the JWT secret                                                                      |
-| sa-catalog     | Firestore user, read the JWT secret, object admin on the raw bucket, run the transcoder job as sa-worker |
-| sa-order       | Firestore user, read the JWT secret, invoker on catalog                                                  |
-| sa-media       | Object viewer on the media bucket                                                                        |
-| sa-worker      | Object viewer on raw, object admin on media, publish to `video-events`, sign its own URLs                |
-| sa-pubsub-push | Invoker on catalog (push endpoint)                                                                       |
+| Account         | Permissions                                                                                               |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| ams-gateway     | Invoker on auth, catalog, order, media                                                                    |
+| ams-auth        | Firestore user, read the JWT secret                                                                       |
+| ams-catalog     | Firestore user, read the JWT secret, object admin on the raw bucket, run the transcoder job as ams-worker |
+| ams-order       | Firestore user, read the JWT secret, invoker on catalog                                                   |
+| ams-media       | Object viewer on the media bucket                                                                         |
+| ams-worker      | Object viewer on raw, object admin on media, publish to `video-events`, sign its own URLs                 |
+| ams-pubsub-push | Invoker on catalog (push endpoint)                                                                        |
 
-Firestore IAM works per database, not per collection, so the three Firestore users share
-`roles/datastore.user` and collection ownership is enforced in code. Giving each service its own
-Firestore database would make that boundary strict.
+Firestore access is granted only on the `artisan-ms` database, through an IAM condition. Firestore IAM
+does not go below the database level, so within it the three services share `roles/datastore.user`
+and collection ownership is enforced in code.
 
 ## Trade-offs compared with the monolith
 
@@ -139,6 +158,8 @@ With `npm run dev:native` (Node processes and gcloud emulators; Docker was not a
 - A duplicate `video.ready` was skipped, late `processing` and `failed` events did not change a READY
   product, and a malformed message was acknowledged and ignored.
 - An invalid file ended FAILED with "The file could not be read as a video".
+- With `FIRESTORE_DATABASE=artisan-ms`, a full upload-to-order run wrote all users, products and
+  orders to that database and nothing to `(default)`.
 
 Not verified: `docker compose` (Docker was not installed), anything on GCP (the deploy script has not
 been run), the ID-token and Secret Manager code paths (they only activate on Cloud Run), and the apps

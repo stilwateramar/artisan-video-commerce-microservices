@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================================
 #  NOT RUN. This script has never been executed against any GCP project. Review it before use.
-#  The live demo still runs the monolith from the original repository.
+#  Every resource it creates is prefixed "artisan-ms" and uses its own Firestore database, so it
+#  can share a project with the monolith demo without touching its service, job, buckets or data.
 # ============================================================================================
 # Deploys the microservices version: five Cloud Run services, the transcoder job, the
 # video-events topic with a push subscription, the JWT secret, and one service account per
@@ -11,22 +12,24 @@ set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
 REGION="${REGION:-asia-south1}"
-RAW_BUCKET="${RAW_BUCKET:-${PROJECT_ID}-artisan-raw}"
-MEDIA_BUCKET="${MEDIA_BUCKET:-${PROJECT_ID}-artisan-media}"
-REPO=artisan
+RAW_BUCKET="${RAW_BUCKET:-${PROJECT_ID}-artisan-ms-raw}"
+MEDIA_BUCKET="${MEDIA_BUCKET:-${PROJECT_ID}-artisan-ms-media}"
+REPO=artisan-ms
+DATABASE=artisan-ms
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}"
 TAG="$(date +%Y%m%d-%H%M%S)"
-TOPIC=video-events
-SUBSCRIPTION=video-events-to-catalog
-SECRET=jwt-secret
-JOB=artisan-transcoder
+TOPIC=artisan-ms-video-events
+SUBSCRIPTION=artisan-ms-video-events-to-catalog
+SECRET=artisan-ms-jwt-secret
+JOB=artisan-ms-transcoder
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICES=(auth-service catalog-service order-service media-service gateway)
+svc() { echo "artisan-ms-$1"; } # Cloud Run name for a service
 
-sa() { echo "sa-$1@${PROJECT_ID}.iam.gserviceaccount.com"; }
+sa() { echo "ams-$1@${PROJECT_ID}.iam.gserviceaccount.com"; }
 retry() { for i in 1 2 3 4 5 6; do "$@" >/dev/null 2>&1 && return 0; sleep $((i * 5)); done; "$@" >/dev/null; }
 project_role() { retry gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$1" --role="$2" --condition=None; }
-url_of() { gcloud run services describe "$1" --region "$REGION" --format='value(status.url)'; }
+url_of() { gcloud run services describe "$(svc "$1")" --region "$REGION" --format='value(status.url)'; }
 
 gcloud config set project "$PROJECT_ID" >/dev/null
 
@@ -35,9 +38,9 @@ gcloud services enable run.googleapis.com firestore.googleapis.com storage.googl
   artifactregistry.googleapis.com cloudbuild.googleapis.com iamcredentials.googleapis.com \
   pubsub.googleapis.com secretmanager.googleapis.com
 
-echo "==> Firestore, buckets, registry"
-gcloud firestore databases describe --database='(default)' >/dev/null 2>&1 ||
-  gcloud firestore databases create --location="$REGION" --type=firestore-native
+echo "==> Firestore database, buckets, registry"
+gcloud firestore databases describe --database="$DATABASE" >/dev/null 2>&1 ||
+  gcloud firestore databases create --database="$DATABASE" --location="$REGION" --type=firestore-native
 for b in "$RAW_BUCKET" "$MEDIA_BUCKET"; do
   gcloud storage buckets describe "gs://$b" >/dev/null 2>&1 ||
     gcloud storage buckets create "gs://$b" --location="$REGION" --uniform-bucket-level-access
@@ -55,12 +58,16 @@ SECRET_VERSION="projects/${PROJECT_ID}/secrets/${SECRET}/versions/latest"
 echo "==> Service accounts"
 for name in auth catalog order media gateway worker pubsub-push; do
   gcloud iam service-accounts describe "$(sa $name)" >/dev/null 2>&1 ||
-    gcloud iam service-accounts create "sa-$name" --display-name="artisan $name"
+    gcloud iam service-accounts create "ams-$name" --display-name="artisan-ms $name"
 done
 
-# Firestore IAM is per database, not per collection, so auth/catalog/order share datastore.user;
-# collection ownership is enforced in code. Separate Firestore databases would make it strict.
-for name in auth catalog order; do project_role "$(sa $name)" roles/datastore.user; done
+# Firestore access is limited to this version's database with an IAM condition. Within it the
+# three services share datastore.user; collection ownership is enforced in code.
+DB_CONDITION="expression=resource.name==\"projects/${PROJECT_ID}/databases/${DATABASE}\",title=artisan-ms-db-only"
+for name in auth catalog order; do
+  retry gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:$(sa $name)" \
+    --role=roles/datastore.user --condition="$DB_CONDITION"
+done
 for name in auth catalog order; do
   retry gcloud secrets add-iam-policy-binding "$SECRET" --member="serviceAccount:$(sa $name)" --role=roles/secretmanager.secretAccessor
 done
@@ -97,10 +104,10 @@ build worker/Dockerfile "$REGISTRY/transcoder:$TAG"
 
 echo "==> Internal services (require Cloud Run invoker)"
 deploy_internal() { # name sa env
-  gcloud run deploy "$1" --image "$REGISTRY/$1:$TAG" --region "$REGION" --service-account "$(sa "$2")" \
+  gcloud run deploy "$(svc "$1")" --image "$REGISTRY/$1:$TAG" --region "$REGION" --service-account "$(sa "$2")" \
     --no-allow-unauthenticated --cpu 1 --memory 512Mi --set-env-vars "$3"
 }
-COMMON="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,JWT_SECRET_NAME=$SECRET_VERSION"
+COMMON="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,FIRESTORE_DATABASE=$DATABASE,JWT_SECRET_NAME=$SECRET_VERSION"
 deploy_internal auth-service auth "$COMMON"
 deploy_internal media-service media "MEDIA_BUCKET=$MEDIA_BUCKET"
 deploy_internal catalog-service catalog \
@@ -117,12 +124,12 @@ retry gcloud run jobs add-iam-policy-binding "$JOB" --region "$REGION" --member=
 retry gcloud iam service-accounts add-iam-policy-binding "$(sa worker)" --member="serviceAccount:$(sa catalog)" --role=roles/iam.serviceAccountUser
 
 echo "==> Gateway (public)"
-gcloud run deploy gateway --image "$REGISTRY/gateway:$TAG" --region "$REGION" --service-account "$(sa gateway)" \
+gcloud run deploy "$(svc gateway)" --image "$REGISTRY/gateway:$TAG" --region "$REGION" --service-account "$(sa gateway)" \
   --no-invoker-iam-check --cpu 1 --memory 512Mi \
   --set-env-vars "AUTH_URL=$(url_of auth-service),CATALOG_URL=$CATALOG_URL,ORDER_URL=$(url_of order-service),MEDIA_URL=$(url_of media-service)"
 
 echo "==> Invoker permissions"
-invoker() { retry gcloud run services add-iam-policy-binding "$1" --region "$REGION" --member="serviceAccount:$2" --role=roles/run.invoker; }
+invoker() { retry gcloud run services add-iam-policy-binding "$(svc "$1")" --region "$REGION" --member="serviceAccount:$2" --role=roles/run.invoker; }
 for s in auth-service catalog-service order-service media-service; do invoker "$s" "$(sa gateway)"; done
 invoker catalog-service "$(sa order)"       # GET /internal/products/:id
 invoker catalog-service "$(sa pubsub-push)" # POST /events/video

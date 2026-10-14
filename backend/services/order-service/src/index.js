@@ -14,7 +14,11 @@ import {
   serviceFetch,
 } from '@artisan/shared';
 
-const db = new Firestore({ ignoreUndefinedProperties: true });
+// A named database keeps this version's data apart from anything else in the project.
+const db = new Firestore({
+  ignoreUndefinedProperties: true,
+  databaseId: env('FIRESTORE_DATABASE', '(default)'),
+});
 const auth = createAuth(await loadJwtSecret());
 const catalogUrl = env('CATALOG_URL', 'http://localhost:8082');
 const orders = db.collection('orders');
