@@ -1,0 +1,7 @@
+# Builds one image from backend/. Used by deploy-microservices.sh:
+#   gcloud builds submit backend --config infra/cloudbuild.yaml \
+#     --substitutions=_DOCKERFILE=services/auth-service/Dockerfile,_IMAGE=<registry>/auth-service:<tag>
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', '${_DOCKERFILE}', '-t', '${_IMAGE}', '.']
+images: ['${_IMAGE}']
