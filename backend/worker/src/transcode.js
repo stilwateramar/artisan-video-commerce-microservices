@@ -1,33 +1,40 @@
-// Cloud Run Job: transcodes one uploaded video (PRODUCT_ID) into the HLS ladder,
-// uploads it to the media bucket and marks the product READY or FAILED.
+// Cloud Run Job: transcodes one uploaded video into the HLS ladder, uploads it to the media
+// bucket and publishes the outcome to the video-events topic. It has no database access; the
+// catalog passes PRODUCT_ID and RAW_OBJECT and owns the product record.
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { Storage } from '@google-cloud/storage';
-import { Firestore, FieldValue } from '@google-cloud/firestore';
+import { PubSub } from '@google-cloud/pubsub';
+import { createStorage, env, log } from '@artisan/shared';
 import { buildFfmpegArgs, buildThumbnailArgs } from './ladder.js';
 
 const MAX_DURATION_SEC = 15 * 60;
-const {
-  PRODUCT_ID,
-  RAW_BUCKET,
-  MEDIA_BUCKET,
-  MEDIA_BASE_URL = `https://storage.googleapis.com/${process.env.MEDIA_BUCKET}`,
-  AUDIO_CODEC = 'libopus',
-} = process.env;
+const productId = env('PRODUCT_ID');
+const rawObject = env('RAW_OBJECT');
+const rawBucket = env('RAW_BUCKET', 'raw');
+const mediaBucket = env('MEDIA_BUCKET', 'media');
+const audioCodec = env('AUDIO_CODEC', 'libopus');
+const topic = new PubSub({ projectId: env('GOOGLE_CLOUD_PROJECT', 'demo-artisan') }).topic(
+  env('EVENTS_TOPIC', 'video-events'),
+);
+const storage = createStorage();
 
-const storage = new Storage();
-const db = new Firestore();
+async function publish(type, fields = {}) {
+  const event = { eventId: randomUUID(), type, productId, occurredAt: new Date().toISOString(), ...fields };
+  await topic.publishMessage({ json: event, attributes: { type, productId } });
+  log.info('published', { type, productId });
+}
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '',
-      err = '';
+    let out = '';
+    let err = '';
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => {
-      err += d;
-      if (err.length > 20000) err = err.slice(-20000);
+      err = (err + d).slice(-20000);
     });
     p.on('close', (code) =>
       code === 0 ? resolve(out) : reject(new Error(`${cmd} exited ${code}: ${err.slice(-2000)}`)),
@@ -35,17 +42,16 @@ function run(cmd, args) {
   });
 }
 
-async function probe(url) {
-  const json = await run('ffprobe', [
-    '-v',
-    'error',
-    '-print_format',
-    'json',
-    '-show_format',
-    '-show_streams',
-    url,
-  ]);
-  const info = JSON.parse(json);
+async function probe(input) {
+  let info;
+  try {
+    info = JSON.parse(
+      await run('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', input]),
+    );
+  } catch (e) {
+    log.warn('ffprobe failed', { productId, error: String(e.message || e) });
+    throw new Error('The file could not be read as a video');
+  }
   return {
     durationSec: Number(info.format?.duration || 0),
     hasAudio: info.streams.some((s) => s.codec_type === 'audio'),
@@ -61,94 +67,62 @@ async function walk(dir) {
   return files.flat();
 }
 
-function contentHeaders(file) {
-  if (file.endsWith('.m3u8'))
-    return { contentType: 'application/vnd.apple.mpegurl', cacheControl: 'public, max-age=60' };
-  if (file.endsWith('.m4s'))
-    return { contentType: 'video/iso.segment', cacheControl: 'public, max-age=31536000, immutable' };
-  if (file.endsWith('.mp4'))
-    return { contentType: 'video/mp4', cacheControl: 'public, max-age=31536000, immutable' };
-  if (file.endsWith('.jpg')) return { contentType: 'image/jpeg', cacheControl: 'public, max-age=86400' };
-  return { contentType: 'application/octet-stream', cacheControl: 'public, max-age=3600' };
-}
-
 async function uploadDir(localDir, prefix) {
-  const files = await walk(localDir);
-  const bucket = storage.bucket(MEDIA_BUCKET);
+  const queue = await walk(localDir);
   // A 15-minute video produces about 900 segment files; upload 16 at a time.
-  const queue = [...files];
   await Promise.all(
     Array.from({ length: 16 }, async () => {
       while (queue.length) {
-        const f = queue.shift();
-        const dest = `${prefix}/${path.relative(localDir, f).split(path.sep).join('/')}`;
-        const { contentType, cacheControl } = contentHeaders(f);
-        await bucket.upload(f, {
-          destination: dest,
-          metadata: { contentType, cacheControl },
-          resumable: false,
-        });
+        const file = queue.shift();
+        await storage.upload(
+          mediaBucket,
+          `${prefix}/${path.relative(localDir, file).split(path.sep).join('/')}`,
+          file,
+        );
       }
     }),
   );
 }
 
 async function main() {
-  if (!PRODUCT_ID) throw new Error('PRODUCT_ID env is required');
-  const ref = db.collection('products').doc(PRODUCT_ID);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error(`product ${PRODUCT_ID} not found`);
-  const product = snap.data();
-
-  await ref.update({ status: 'PROCESSING', processingStartedAt: FieldValue.serverTimestamp() });
-
+  await publish('video.processing');
+  const outDir = path.join(os.tmpdir(), `transcode-${productId}`);
   try {
-    // ffmpeg reads the raw file over HTTPS, so a multi-GB upload never has to fit on local disk.
-    const [inputUrl] = await storage
-      .bucket(RAW_BUCKET)
-      .file(product.rawObject)
-      .getSignedUrl({ version: 'v4', action: 'read', expires: Date.now() + 3 * 60 * 60 * 1000 });
-
-    const meta = await probe(inputUrl);
+    // In production ffmpeg reads the raw file over HTTPS (signed URL), so a multi-GB upload
+    // never has to fit on local disk.
+    const input = await storage.readUrl(rawBucket, rawObject);
+    const meta = await probe(input);
     if (!meta.hasVideo) throw new Error('The file has no video track');
     if (meta.durationSec > MAX_DURATION_SEC + 5) {
       throw new Error(`Video is ${Math.round(meta.durationSec / 60)} minutes long; the limit is 15`);
     }
 
-    const outDir = `/tmp/${PRODUCT_ID}`;
     await fs.rm(outDir, { recursive: true, force: true });
     await fs.mkdir(outDir, { recursive: true });
-
     await run(
       'ffmpeg',
       buildThumbnailArgs({
-        input: inputUrl,
+        input,
         outFile: `${outDir}/thumb.jpg`,
         atSeconds: Math.min(2, meta.durationSec / 2),
       }),
     );
-    await run(
-      'ffmpeg',
-      buildFfmpegArgs({ input: inputUrl, outDir, hasAudio: meta.hasAudio, audioCodec: AUDIO_CODEC }),
-    );
+    await run('ffmpeg', buildFfmpegArgs({ input, outDir, hasAudio: meta.hasAudio, audioCodec }));
 
-    const prefix = `videos/${PRODUCT_ID}`;
+    const prefix = `videos/${productId}`;
     await uploadDir(outDir, prefix);
-
-    await ref.update({
-      status: 'READY',
+    await publish('video.ready', {
+      hlsPath: `${prefix}/master.m3u8`,
+      thumbnailPath: `${prefix}/thumb.jpg`,
       durationSec: Math.round(meta.durationSec),
-      hlsUrl: `${MEDIA_BASE_URL}/${prefix}/master.m3u8`,
-      thumbnailUrl: `${MEDIA_BASE_URL}/${prefix}/thumb.jpg`,
-      readyAt: FieldValue.serverTimestamp(),
-      error: FieldValue.delete(),
     });
-    console.log(JSON.stringify({ msg: 'transcode complete', productId: PRODUCT_ID }));
   } catch (e) {
-    console.error(e);
-    await ref.update({ status: 'FAILED', error: String(e.message || e).slice(0, 1000) });
+    log.error('transcode failed', { productId, error: String(e.message || e) });
+    await publish('video.failed', { error: String(e.message || e).slice(0, 500) });
     process.exitCode = 1;
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true });
   }
 }
 
-main();
+await main();
