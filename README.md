@@ -1,4 +1,4 @@
-# Artisan Video-Commerce
+# Artisan Video-Commerce (microservices)
 
 Artisans upload a behind-the-scenes process video (up to 15 minutes, any file size) for a hand-made
 product. Buyers search the catalogue by keyword or tag, watch the video and place an order. The flow
@@ -7,24 +7,31 @@ ends at order placement; shipping and fulfilment are out of scope.
 One Expo codebase runs as a native Android app (phone and tablet) and as a web app in Chrome. The
 backend runs entirely on Google Cloud.
 
-- Live web app and API: https://artisan-api-398082391608.asia-south1.run.app
-- Android APK: attached to the GitHub release (built with `expo run:android --variant release`)
+This is the microservices version of the backend. It keeps the same public API, so the Android and
+web apps are unchanged. It has been run and tested locally only and is **not deployed**: the live
+demo at https://artisan-api-398082391608.asia-south1.run.app still runs the monolith.
+See [docs/MICROSERVICES.md](docs/MICROSERVICES.md) for the design and what was verified.
 
 ## Architecture
 
-| Part       | Technology                                                                         | Runs on                                  |
-| ---------- | ---------------------------------------------------------------------------------- | ---------------------------------------- |
-| App        | Expo SDK 57, Expo Router, TypeScript. ExoPlayer (Media3) on Android, hls.js on web | Android APK, web build served by the API |
-| API        | Node 22, Express 5                                                                 | Cloud Run service `artisan-api`          |
-| Transcoder | Node + ffmpeg (H.264, Opus, HLS with fMP4 segments)                                | Cloud Run Job `artisan-transcoder`       |
-| Data       | Firestore: users, products, orders                                                 | GCP                                      |
-| Media      | Cloud Storage: private raw bucket, private HLS bucket                              | GCP                                      |
+| Part            | Technology                                                                         | Runs on                           |
+| --------------- | ---------------------------------------------------------------------------------- | --------------------------------- |
+| App             | Expo SDK 57, Expo Router, TypeScript. ExoPlayer (Media3) on Android, hls.js on web | Android APK, web build in gateway |
+| gateway         | Node 22, Express 5, streaming reverse proxy                                        | Cloud Run (public)                |
+| auth-service    | Demo sign-in, JWT                                                                  | Cloud Run (internal)              |
+| catalog-service | Products, uploads, search, transcoder trigger, video events                        | Cloud Run (internal)              |
+| order-service   | Orders; reads products through catalog-service                                     | Cloud Run (internal)              |
+| media-service   | HLS streaming from Cloud Storage                                                   | Cloud Run (internal)              |
+| Transcoder      | Node + ffmpeg (H.264, Opus, HLS with fMP4 segments), publishes to Pub/Sub          | Cloud Run Job                     |
+| Data and events | Firestore (users, products, orders), Pub/Sub topic `video-events`                  | GCP                               |
+| Media           | Cloud Storage: private raw bucket, private HLS bucket                              | GCP                               |
 
 Uploads go straight from the client to Cloud Storage through a resumable upload session, so file size
-is not limited by the API. When the upload finishes, the API starts the transcoder job, which writes
-an adaptive HLS ladder to the media bucket and marks the product `READY`. Players fetch playlists and
-segments through the API's `/media` route, because our GCP organisation does not allow public buckets.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the data flow.
+is not limited by any service. When the upload finishes, catalog-service starts the transcoder job.
+The job writes an adaptive HLS ladder to the media bucket and publishes `video.ready` (or
+`video.failed`) to Pub/Sub; catalog-service receives it through a push subscription and updates the
+product. Players fetch playlists and segments through the gateway and media-service, because our GCP
+organisation does not allow public buckets. See [docs/MICROSERVICES.md](docs/MICROSERVICES.md).
 
 ## Playback under 50 kbps
 
@@ -75,37 +82,46 @@ have not been repeated on a physical device.
 
 ## Running locally
 
-Requirements: Node 22, ffmpeg, the gcloud CLI, and for Android a JDK 17 and the Android SDK.
+With Docker:
 
 ```bash
-# API, against a real GCP project (uses Application Default Credentials)
-cd backend/api
-cp .env.example .env    # fill in the project and bucket names
-npm install
-LOCAL_WORKER=1 node --env-file=.env src/index.js
+npm run dev          # docker compose up --build; open http://localhost:8080
+```
 
-# App on web
-cd app
-npm install
-npx expo start --web
+Without Docker (needs Node 22, ffmpeg, Java 21 and the gcloud components `cloud-firestore-emulator`
+and `pubsub-emulator`):
+
+```bash
+cd backend && npm install && cd ..
+npm run dev:native   # emulators + all services as Node processes; logs in .local-logs/
+```
+
+Both use the Firestore and Pub/Sub emulators and keep video files in `.local-storage/`. Set
+`STORAGE_MODE=gcs` with `RAW_BUCKET` and `MEDIA_BUCKET` to use Cloud Storage instead.
+
+```bash
+# App on web against the local gateway
+cd app && npm install && npx expo start --web
 
 # App on Android
-EXPO_PUBLIC_API_URL=https://<api-url> npx expo run:android
+EXPO_PUBLIC_API_URL=http://10.0.2.2:8080 npx expo run:android
 ```
 
 Check the ladder on any video: `cd backend/worker && node scripts/test-ladder.js <video>`.
 
-Seed six demo products: `node backend/api/scripts/seed.js <api-url> [folder-of-videos]`.
+Seed six demo products: `node backend/scripts/seed.js <gateway-url> [folder-of-videos]`.
 
 ## Deploying
 
 ```bash
-PROJECT_ID=<project> REGION=asia-south1 ./infra/deploy.sh
+PROJECT_ID=<project> REGION=asia-south1 ./infra/deploy-microservices.sh
 ```
 
-The script enables the APIs, creates Firestore, both buckets, the service accounts and IAM bindings,
-builds the web app into `backend/api/public`, and deploys the API service and the transcoder job.
-It is safe to re-run and keeps the existing `JWT_SECRET`.
+**This script has not been run.** It enables the APIs, creates Firestore, the buckets, an Artifact
+Registry repository, the JWT secret in Secret Manager, one service account per service with
+least-privilege IAM, the `video-events` topic and its authenticated push subscription, builds the
+images with Cloud Build, and deploys the five services and the transcoder job. Only the gateway is
+public; the other services require the Cloud Run invoker role.
 
 ## API
 
@@ -125,18 +141,24 @@ It is safe to re-run and keeps the existing `JWT_SECRET`.
 ## Repository layout
 
 ```
-app/              Expo app: src/app (screens), src/components, src/lib
-backend/api/      Cloud Run API; also serves the web build from public/
-backend/worker/   Cloud Run Job transcoder; src/ladder.js holds the bitrate ladder
-infra/deploy.sh   GCP setup and deploy
-tools/            Bandwidth-limiting proxy used for the Android playback test
-docs/             Architecture notes, demo recording guide, screenshots
+app/                        Expo app: src/app (screens), src/components, src/lib
+backend/shared/             Shared package: config, JWT, logging, errors, storage, service calls
+backend/services/gateway/   Public entry point; serves the web build from public/
+backend/services/*-service/ auth, catalog, order and media services
+backend/worker/             Transcoder job; src/ladder.js holds the bitrate ladder
+backend/scripts/            Seed script, Pub/Sub emulator setup
+infra/                      deploy-microservices.sh (not run), cloudbuild.yaml, bucket CORS
+scripts/dev-native.sh       Local stack without Docker
+docker-compose.yml          Local stack with Docker
+tools/                      Bandwidth-limiting proxy used for the Android playback test
+docs/                       Architecture, microservices design, demo guide, screenshots
 ```
 
 ## Known limitations
 
 - Sign-in is a demo: a name and role, no password. Production would use Firebase Auth.
 - Payment is simulated. Shipping, logistics and tracking are out of scope by design.
+- This version has not been deployed; see docs/MICROSERVICES.md for what was verified locally.
 - Search uses Firestore token arrays, which is fine for a small catalogue but not for a large one.
 - Video is streamed through Cloud Run without a CDN. A CDN in front of `/media` would cut latency and
   cost; the cache headers are already set for it.

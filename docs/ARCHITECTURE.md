@@ -1,5 +1,8 @@
 # Architecture
 
+This describes the data flow and the video pipeline, which are the same in both versions. For how
+the backend is split into services, events and IAM, see [MICROSERVICES.md](MICROSERVICES.md).
+
 ```
   Android app (phone, tablet)          Chrome
   ExoPlayer via react-native-video     hls.js
