@@ -2,6 +2,8 @@
   "name": "artisan-video-commerce",
   "private": true,
   "scripts": {
+    "dev": "docker compose up --build",
+    "dev:native": "bash scripts/dev-native.sh",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

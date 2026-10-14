@@ -5,5 +5,7 @@ ios/
 .expo/
 dist/
 dist-web/
-backend/api/public/
+backend/services/gateway/public/
 docs/screenshots/
+.local-storage/
+.local-logs/

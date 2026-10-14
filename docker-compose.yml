@@ -1,0 +1,80 @@
+# Local stack: all services, the gateway, and the Firestore and Pub/Sub emulators.
+# Video files are kept in ./.local-storage (STORAGE_MODE=local). To use real Cloud Storage
+# instead, set STORAGE_MODE=gcs plus RAW_BUCKET/MEDIA_BUCKET and mount credentials.
+# Start: docker compose up --build   then open http://localhost:8080
+
+x-common: &common
+  environment: &env
+    GOOGLE_CLOUD_PROJECT: demo-artisan
+    FIRESTORE_EMULATOR_HOST: firestore:8080
+    PUBSUB_EMULATOR_HOST: pubsub:8085
+    JWT_SECRET: dev-secret
+    STORAGE_MODE: local
+    LOCAL_STORAGE_DIR: /data
+    RAW_BUCKET: raw
+    MEDIA_BUCKET: media
+    PORT: '8080'
+  volumes:
+    - ./.local-storage:/data
+  depends_on:
+    firestore:
+      condition: service_started
+    pubsub:
+      condition: service_started
+
+services:
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: gcloud emulators firestore start --host-port=0.0.0.0:8080 --project=demo-artisan
+
+  pubsub:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=demo-artisan
+
+  pubsub-init:
+    build: { context: ./backend, dockerfile: services/catalog-service/Dockerfile }
+    working_dir: /app
+    command: sh -c "npm install --no-save @google-cloud/pubsub && sleep 5 && node scripts/pubsub-init.js http://catalog-service:8080/events/video"
+    environment:
+      GOOGLE_CLOUD_PROJECT: demo-artisan
+      PUBSUB_EMULATOR_HOST: pubsub:8085
+    depends_on: [pubsub]
+
+  auth-service:
+    <<: *common
+    build: { context: ./backend, dockerfile: services/auth-service/Dockerfile }
+
+  catalog-service:
+    <<: *common
+    build: { context: ./backend, dockerfile: services/catalog-service/Dockerfile }
+    environment:
+      <<: *env
+      TRANSCODER_MODE: http
+      TRANSCODER_URL: http://transcoder:8080
+
+  order-service:
+    <<: *common
+    build: { context: ./backend, dockerfile: services/order-service/Dockerfile }
+    environment:
+      <<: *env
+      CATALOG_URL: http://catalog-service:8080
+
+  media-service:
+    <<: *common
+    build: { context: ./backend, dockerfile: services/media-service/Dockerfile }
+
+  transcoder:
+    <<: *common
+    build: { context: ./backend, dockerfile: worker/Dockerfile }
+    command: node worker/src/dev-server.js
+
+  gateway:
+    build: { context: ./backend, dockerfile: services/gateway/Dockerfile }
+    ports: ['8080:8080']
+    environment:
+      PORT: '8080'
+      AUTH_URL: http://auth-service:8080
+      CATALOG_URL: http://catalog-service:8080
+      ORDER_URL: http://order-service:8080
+      MEDIA_URL: http://media-service:8080
+    depends_on: [auth-service, catalog-service, order-service, media-service]

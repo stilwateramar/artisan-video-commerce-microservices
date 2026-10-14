@@ -15,9 +15,13 @@ ios/
 .env.*
 !.env.example
 
-# Web build copied in by infra/deploy.sh
-backend/api/public/*
-!backend/api/public/index.html
+# Web build copied in by infra/deploy-microservices.sh
+backend/services/gateway/public/*
+!backend/services/gateway/public/index.html
 
 backend/worker/ladder-out/
 .DS_Store
+
+# Local development data
+.local-storage/
+.local-logs/
