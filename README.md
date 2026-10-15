@@ -153,7 +153,7 @@ backend/services/gateway/   Public entry point; serves the web build from public
 backend/services/*-service/ auth, catalog, order and media services
 backend/worker/             Transcoder job; src/ladder.js holds the bitrate ladder
 backend/scripts/            Seed script, Pub/Sub emulator setup
-infra/                      deploy-microservices.sh (not run), cloudbuild.yaml, bucket CORS
+infra/                      deploy-microservices.sh, cloudbuild.yaml, bucket CORS
 scripts/dev-native.sh       Local stack without Docker
 docker-compose.yml          Local stack with Docker
 tools/                      Bandwidth-limiting proxy used for the Android playback test
