@@ -12,6 +12,7 @@ web apps are unchanged apart from the API address.
 
 - Live (microservices): https://artisan-ms-gateway-398082391608.asia-south1.run.app
 - The monolith version runs separately at https://artisan-api-398082391608.asia-south1.run.app
+- Android APK ("Artisan Studio MS"): [v1.0.0 release](https://github.com/stilwateramar/artisan-video-commerce-microservices/releases/tag/v1.0.0)
 
 See [docs/MICROSERVICES.md](docs/MICROSERVICES.md) for the design and what was verified.
 
