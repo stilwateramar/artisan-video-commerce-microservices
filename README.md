@@ -110,6 +110,12 @@ cd app && npm install && npx expo start --web
 EXPO_PUBLIC_API_URL=http://10.0.2.2:8080 npx expo run:android
 ```
 
+The Android app ID is `com.devdolphins.artisanvideo.ms` and its name is "Artisan Studio MS", so it
+installs next to the monolith's app. The API address is compiled into the bundle, and Metro caches
+compiled files across projects: when building against a different `EXPO_PUBLIC_API_URL`, clear
+`$TMPDIR/metro-cache` first and check the address in
+`android/app/build/generated/assets/react/release/index.android.bundle`.
+
 Check the ladder on any video: `cd backend/worker && node scripts/test-ladder.js <video>`.
 
 Seed six demo products: `node backend/scripts/seed.js <gateway-url> [folder-of-videos]`.
