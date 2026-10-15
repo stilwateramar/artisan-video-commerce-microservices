@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "Artisan Studio",
-    "slug": "artisan-video-commerce",
-    "scheme": "artisan",
+    "name": "Artisan Studio MS",
+    "slug": "artisan-video-commerce-ms",
+    "scheme": "artisan-ms",
     "version": "1.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "android": {
-      "package": "com.devdolphins.artisanvideo",
+      "package": "com.devdolphins.artisanvideo.ms",
       "adaptiveIcon": {
         "backgroundColor": "#F4EDE4",
         "foregroundImage": "./assets/android-icon-foreground.png",
