@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# ============================================================================================
-#  NOT RUN. This script has never been executed against any GCP project. Review it before use.
-#  Every resource it creates is prefixed "artisan-ms" and uses its own Firestore database, so it
-#  can share a project with the monolith demo without touching its service, job, buckets or data.
-# ============================================================================================
+# Run once, on 2026-10-15, into project artisan-video-demo-q4f8: completed without changes.
+# Every resource it creates is prefixed "artisan-ms" and uses its own Firestore database, so it
+# shares the project with the monolith demo without touching its service, job, buckets or data.
 # Deploys the microservices version: five Cloud Run services, the transcoder job, the
 # video-events topic with a push subscription, the JWT secret, and one service account per
 # service with least-privilege IAM. Safe to re-run.
@@ -148,5 +146,16 @@ else
   gcloud pubsub subscriptions create "$SUBSCRIPTION" --topic="$TOPIC" "${SUB_ARGS[@]}"
 fi
 
+# New invoker bindings take a minute or two to apply; until then the gateway gets 403 from the
+# services. Wait for a real round trip through the gateway before reporting success.
+GATEWAY_URL="$(url_of gateway)"
+echo "==> Waiting for IAM to propagate"
+for i in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY_URL/api/products/tags")"
+  [ "$code" = 200 ] && break
+  sleep 10
+done
+[ "$code" = 200 ] || echo "Gateway still returns $code; IAM may need a few more minutes."
+
 echo
-echo "Deployed. Public URL: $(url_of gateway)"
+echo "Deployed. Public URL: $GATEWAY_URL"

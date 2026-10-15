@@ -1,8 +1,10 @@
 # Microservices design
 
 This is the microservices version of the platform. It has the same public API and the same
-apps as the monolith; only the backend is split. It has been run locally but **not deployed**:
-`infra/deploy-microservices.sh` has never been executed.
+apps as the monolith; only the backend is split. It is deployed next to the monolith demo:
+
+- Microservices: https://artisan-ms-gateway-398082391608.asia-south1.run.app
+- Monolith (unchanged): https://artisan-api-398082391608.asia-south1.run.app
 
 ## Services
 

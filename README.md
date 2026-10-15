@@ -8,8 +8,11 @@ One Expo codebase runs as a native Android app (phone and tablet) and as a web a
 backend runs entirely on Google Cloud.
 
 This is the microservices version of the backend. It keeps the same public API, so the Android and
-web apps are unchanged. It has been run and tested locally only and is **not deployed**: the live
-demo at https://artisan-api-398082391608.asia-south1.run.app still runs the monolith.
+web apps are unchanged apart from the API address.
+
+- Live (microservices): https://artisan-ms-gateway-398082391608.asia-south1.run.app
+- The monolith version runs separately at https://artisan-api-398082391608.asia-south1.run.app
+
 See [docs/MICROSERVICES.md](docs/MICROSERVICES.md) for the design and what was verified.
 
 ## Architecture
@@ -117,7 +120,7 @@ Seed six demo products: `node backend/scripts/seed.js <gateway-url> [folder-of-v
 PROJECT_ID=<project> REGION=asia-south1 ./infra/deploy-microservices.sh
 ```
 
-**This script has not been run.** It enables the APIs, creates Firestore, the buckets, an Artifact
+It enables the APIs, creates Firestore, the buckets, an Artifact
 Registry repository, the JWT secret in Secret Manager, one service account per service with
 least-privilege IAM, the `video-events` topic and its authenticated push subscription, builds the
 images with Cloud Build, and deploys the five services and the transcoder job. Only the gateway is
@@ -161,7 +164,6 @@ docs/                       Architecture, microservices design, demo guide, scre
 
 - Sign-in is a demo: a name and role, no password. Production would use Firebase Auth.
 - Payment is simulated. Shipping, logistics and tracking are out of scope by design.
-- This version has not been deployed; see docs/MICROSERVICES.md for what was verified locally.
 - Search uses Firestore token arrays, which is fine for a small catalogue but not for a large one.
 - Video is streamed through Cloud Run without a CDN. A CDN in front of `/media` would cut latency and
   cost; the cache headers are already set for it.
